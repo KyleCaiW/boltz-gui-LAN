@@ -100,17 +100,40 @@ The web interface will be available at http://localhost:6868
 The frontend listens on all network interfaces. To access it from another
 device on the same LAN, use `http://<this-computer-LAN-IP>:6868`.
 
-On Windows, allow inbound TCP traffic for ports `6868` and `6969` in Windows
-Firewall (or run the following in an Administrator PowerShell):
+On Linux, allow inbound TCP traffic for ports `6868` and `6969` in your
+firewall. For example, with UFW:
 
-```powershell
-New-NetFirewallRule -DisplayName "Boltz GUI" -Direction Inbound -Protocol TCP -LocalPort 6868,6969 -Action Allow
+```bash
+sudo ufw allow 6868/tcp
+sudo ufw allow 6969/tcp
+```
+
+Or with firewalld:
+
+```bash
+sudo firewall-cmd --permanent --add-port=6868/tcp
+sudo firewall-cmd --permanent --add-port=6969/tcp
+sudo firewall-cmd --reload
 ```
 
 ### Access the Application
 
 Open `http://localhost:6868` on this machine, or
 `http://<this-computer-LAN-IP>:6868` from another device on the same LAN.
+
+### Start and Stop Script
+
+Use the shell script to manage both services:
+
+```bash
+sh run.sh start
+sh run.sh stop
+sh run.sh restart
+sh run.sh status
+```
+
+The first start installs backend and frontend dependencies if needed. Logs are
+written to `logs/backend.log` and `logs/frontend.log`.
 
 ## Usage
 
