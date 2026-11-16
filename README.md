@@ -97,9 +97,20 @@ npm run dev
 
 The web interface will be available at http://localhost:6868
 
+The frontend listens on all network interfaces. To access it from another
+device on the same LAN, use `http://<this-computer-LAN-IP>:6868`.
+
+On Windows, allow inbound TCP traffic for ports `6868` and `6969` in Windows
+Firewall (or run the following in an Administrator PowerShell):
+
+```powershell
+New-NetFirewallRule -DisplayName "Boltz GUI" -Direction Inbound -Protocol TCP -LocalPort 6868,6969 -Action Allow
+```
+
 ### Access the Application
 
-Open your browser and navigate to http://localhost:6868 to access the Boltz GUI.
+Open `http://localhost:6868` on this machine, or
+`http://<this-computer-LAN-IP>:6868` from another device on the same LAN.
 
 ## Usage
 

@@ -24,7 +24,8 @@ app = FastAPI(title="Boltz Affinity Prediction", description="Web interface for 
 # Add CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:6868"], 
+    allow_origins=["http://localhost:6868", "http://127.0.0.1:6868"],
+    allow_origin_regex=r"http://(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):6868",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
