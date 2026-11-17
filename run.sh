@@ -2,6 +2,8 @@
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BOLTZ_CACHE=${BOLTZ_CACHE:-${ROOT%/*}/boltz-cache}
+export BOLTZ_CACHE
 BACKEND_DIR="$ROOT/backend"
 FRONTEND_DIR="$ROOT/frontend"
 LOG_DIR="$ROOT/logs"
@@ -13,7 +15,7 @@ FRONTEND_PID="$PID_DIR/frontend.pid"
 BACKEND_PORT=6969
 FRONTEND_PORT=6868
 
-mkdir -p "$LOG_DIR" "$PID_DIR"
+mkdir -p "$LOG_DIR" "$PID_DIR" "$BOLTZ_CACHE"
 
 say() {
     printf '%s\n' "$*"
@@ -34,6 +36,10 @@ is_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
 }
 
+service_alive() {
+    is_alive "$1" || kill -0 -"$1" 2>/dev/null
+}
+
 port_in_use() {
     if command -v ss >/dev/null 2>&1; then
         ss -H -ltn 2>/dev/null \
@@ -52,25 +58,11 @@ lan_ip() {
     fi
 }
 
-children_of() {
-    ps -eo pid=,ppid= 2>/dev/null \
-        | awk -v parent="$1" '$2 == parent { print $1 }'
-}
-
-collect_tree() {
-    pid=$1
-    outfile=$2
-
-    for child in $(children_of "$pid"); do
-        collect_tree "$child" "$outfile"
-    done
-    printf '%s\n' "$pid" >> "$outfile"
-}
-
 ensure_tools() {
     command -v uv >/dev/null 2>&1 || die "未找到 uv，请先安装 uv"
     command -v npm >/dev/null 2>&1 || die "未找到 npm，请先安装 Node.js"
     command -v curl >/dev/null 2>&1 || die "未找到 curl，无法检查服务状态"
+    command -v setsid >/dev/null 2>&1 || die "未找到 setsid，无法可靠管理服务进程"
 }
 
 ensure_deps() {
@@ -100,11 +92,7 @@ spawn() {
     shift 2
 
     : > "$logfile"
-    if command -v nohup >/dev/null 2>&1; then
-        (cd "$workdir" && exec nohup "$@" </dev/null >>"$logfile" 2>&1) &
-    else
-        (cd "$workdir" && exec "$@" </dev/null >>"$logfile" 2>&1) &
-    fi
+    (cd "$workdir" && exec setsid "$@" </dev/null >>"$logfile" 2>&1) &
     SPAWNED_PID=$!
 }
 
@@ -137,46 +125,40 @@ wait_for_service() {
 stop_service() {
     name=$1
     pidfile=$2
-    pid=$(read_pid "$pidfile")
+    service_pid=$(read_pid "$pidfile")
 
-    if [ -z "$pid" ]; then
+    if [ -z "$service_pid" ]; then
         say "$name 未运行"
         return 0
     fi
 
-    if ! is_alive "$pid"; then
+    if ! is_alive "$service_pid"; then
         rm -f "$pidfile"
         say "$name 未运行（已清理残留 PID 文件）"
         return 0
     fi
 
-    say "停止 $name (PID $pid) ..."
-    treefile="$PID_DIR/$name.tree.$$"
-    : > "$treefile"
-    collect_tree "$pid" "$treefile"
+    say "停止 $name (PID $service_pid) ..."
+    kill -TERM -"$service_pid" 2>/dev/null || kill -TERM "$service_pid" 2>/dev/null || true
 
-    while IFS= read -r child; do
-        [ -n "$child" ] && kill "$child" 2>/dev/null || true
-    done < "$treefile"
+    count=0
+    while service_alive "$service_pid" && [ "$count" -lt 10 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
 
-    sleep 1
-    while IFS= read -r child; do
-        if is_alive "$child"; then
-            kill -9 "$child" 2>/dev/null || true
-        fi
-    done < "$treefile"
-
-    rm -f "$treefile"
-
-    if is_alive "$pid"; then
-        kill -9 "$pid" 2>/dev/null || true
+    if service_alive "$service_pid"; then
+        kill -KILL -"$service_pid" 2>/dev/null || kill -KILL "$service_pid" 2>/dev/null || true
+        sleep 1
     fi
 
     rm -f "$pidfile"
-    if is_alive "$pid"; then
-        say "警告: $name 可能仍在运行 (PID $pid)" >&2
+    if service_alive "$service_pid"; then
+        say "错误: $name 未能停止 (PID $service_pid)" >&2
+        return 1
     else
         say "$name 已停止"
+        return 0
     fi
 }
 
@@ -238,6 +220,7 @@ print_access() {
         say "局域网访问: http://$ip:$FRONTEND_PORT"
     fi
     say "后端 API:   http://localhost:$BACKEND_PORT"
+    say "Boltz 缓存: $BOLTZ_CACHE"
     say "日志目录:   $LOG_DIR"
 }
 
@@ -253,8 +236,10 @@ start_all() {
 }
 
 stop_all() {
-    stop_service "前端" "$FRONTEND_PID"
-    stop_service "后端" "$BACKEND_PID"
+    stop_ok=0
+    stop_service "前端" "$FRONTEND_PID" || stop_ok=1
+    stop_service "后端" "$BACKEND_PID" || stop_ok=1
+    return "$stop_ok"
 }
 
 status_all() {
@@ -299,7 +284,9 @@ case "$command" in
         stop_all
         ;;
     restart)
-        stop_all
+        if ! stop_all; then
+            die "服务未能完全停止，已取消重启"
+        fi
         sleep 1
         start_all
         ;;
