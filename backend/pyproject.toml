@@ -6,6 +6,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boltz>=2.2.1",
+    # Pinned: cuequivariance >=0.13 resolves to CUDA 13 wheels and would
+    # replace torch 2.7.1+cu126 with an incompatible build.
+    "cuequivariance==0.8.1",
+    "cuequivariance-torch==0.8.1",
+    "cuequivariance-ops-torch-cu12==0.8.1",
+    "cuequivariance-ops-cu12==0.8.1",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "pyyaml>=6.0",

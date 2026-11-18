@@ -451,6 +451,13 @@ async def predict_boltz(request: BoltzRequest):
         has_msa_files = any(seq.msa and seq.msa.strip() for seq in request.sequences)
         if not has_msa_files:
             cmd.append("--use_msa_server")
+            # Optional override of the ColabFold-compatible MSA server.
+            msa_server_url = os.environ.get("BOLTZ_MSA_SERVER_URL", "").strip()
+            if msa_server_url:
+                cmd.extend(["--msa_server_url", msa_server_url])
+            msa_pairing = os.environ.get("BOLTZ_MSA_PAIRING_STRATEGY", "").strip()
+            if msa_pairing:
+                cmd.extend(["--msa_pairing_strategy", msa_pairing])
         
         cmd.extend(["--output_format", "pdb"])
 
