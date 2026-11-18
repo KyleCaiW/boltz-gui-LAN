@@ -12,6 +12,23 @@ const InputView = ({ onJobSubmitted, onShowLoading, onBackToHome }) => {
   const [affinityBinder, setAffinityBinder] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showExamples, setShowExamples] = useState(false)
+  const [msaServerUrl, setMsaServerUrl] = useState('')
+  const [defaultMsaServerUrl, setDefaultMsaServerUrl] = useState('https://api.colabfold.com')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config) => {
+        if (!cancelled && config?.msa_server_url) {
+          setDefaultMsaServerUrl(config.msa_server_url)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Example templates
   const examples = [
@@ -422,6 +439,7 @@ const InputView = ({ onJobSubmitted, onShowLoading, onBackToHome }) => {
       const formData = {
         version: 1,
         ...(jobName && { job_name: jobName }),
+        ...(msaServerUrl.trim() && { msa_server_url: msaServerUrl.trim() }),
         sequences: sequences.map(seq => ({
           entity_type: seq.entity_type,
           id: seq.chainId,
@@ -627,6 +645,22 @@ const InputView = ({ onJobSubmitted, onShowLoading, onBackToHome }) => {
                 />
                 <p className="text-sm text-gray-600 mt-2 font-medium">
                   A custom name helps you identify this job later. If left empty, a unique ID will be generated.
+                </p>
+              </div>
+              <div>
+                <label className="input-label">
+                  MSA Server URL (Optional)
+                </label>
+                <input
+                  type="text"
+                  className="input-field"
+                  value={msaServerUrl}
+                  onChange={(e) => setMsaServerUrl(e.target.value)}
+                  placeholder={defaultMsaServerUrl}
+                />
+                <p className="text-sm text-gray-600 mt-2 font-medium">
+                  ColabFold-compatible server used to generate MSAs. Leave empty to use the server configured on the
+                  backend ({defaultMsaServerUrl}). Ignored when you upload an .a3m file or enable "No MSA".
                 </p>
               </div>
             </div>

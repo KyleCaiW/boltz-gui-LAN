@@ -129,6 +129,7 @@ class BoltzRequest(BaseModel):
     templates: Optional[List[Template]] = None
     properties: Optional[List[Property]] = None
     job_name: Optional[str] = None
+    msa_server_url: Optional[str] = None
     version: int = 1
 
 class PredictionResponse(BaseModel):
@@ -451,8 +452,11 @@ async def predict_boltz(request: BoltzRequest):
         has_msa_files = any(seq.msa and seq.msa.strip() for seq in request.sequences)
         if not has_msa_files:
             cmd.append("--use_msa_server")
-            # Optional override of the ColabFold-compatible MSA server.
-            msa_server_url = os.environ.get("BOLTZ_MSA_SERVER_URL", "").strip()
+            # Per-request override wins over the configured default.
+            msa_server_url = (
+                (request.msa_server_url or "").strip()
+                or os.environ.get("BOLTZ_MSA_SERVER_URL", "").strip()
+            )
             if msa_server_url:
                 cmd.extend(["--msa_server_url", msa_server_url])
             msa_pairing = os.environ.get("BOLTZ_MSA_PAIRING_STRATEGY", "").strip()
@@ -561,6 +565,14 @@ async def predict_boltz(request: BoltzRequest):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+@app.get("/api/config")
+async def get_config():
+    """Expose non-secret runtime defaults to the UI."""
+    return {
+        "msa_server_url": os.environ.get("BOLTZ_MSA_SERVER_URL", "").strip()
+        or "https://api.colabfold.com",
+    }
 
 @app.get("/api/jobs/{job_id}/results")
 async def get_job_results(job_id: str):
