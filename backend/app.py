@@ -34,6 +34,48 @@ app.add_middleware(
 # Create directories if they don't exist
 jobs_dir = Path("jobs")
 jobs_dir.mkdir(exist_ok=True)
+uploads_dir = Path(__file__).resolve().parent / "uploads"
+uploads_dir.mkdir(exist_ok=True)
+
+
+def resolve_local_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path.resolve()
+
+
+def is_valid_pdb(path: Path) -> bool:
+    try:
+        with path.open("r", errors="ignore") as handle:
+            for _ in range(200):
+                line = handle.readline()
+                if not line:
+                    break
+                if line.startswith(("ATOM", "HETATM", "HEADER", "MODEL")):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def find_job_pdb(job_path: Path) -> Optional[Path]:
+    candidates = [
+        job_path / "boltz_output" / "boltz_input.pdb",
+        job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input.pdb",
+        job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input_model_0.pdb",
+        job_path / "boltz_output" / "boltz_input_model_0.pdb",
+    ]
+    for path in candidates:
+        if path.is_file() and is_valid_pdb(path):
+            return path
+
+    output_dir = job_path / "boltz_output"
+    if output_dir.exists():
+        for path in output_dir.rglob("*.pdb"):
+            if path.is_file() and is_valid_pdb(path):
+                return path
+    return None
 
 from typing import List, Optional, Union, Dict, Any
 
@@ -213,10 +255,6 @@ async def upload_msa(file: UploadFile = File(...)):
     if not file.filename.endswith('.a3m'):
         raise HTTPException(status_code=400, detail="Only .a3m files are allowed")
     
-    # Create a temporary uploads directory if it doesn't exist
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(exist_ok=True)
-    
     # Generate a unique filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_filename = f"{timestamp}_{file.filename}"
@@ -228,7 +266,7 @@ async def upload_msa(file: UploadFile = File(...)):
             content = await file.read()
             buffer.write(content)
         
-        return {"filename": unique_filename, "path": str(file_path)}
+        return {"filename": unique_filename, "path": str(file_path.resolve())}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
@@ -238,10 +276,6 @@ async def upload_template(file: UploadFile = File(...)):
     if not (file.filename.endswith('.cif') or file.filename.endswith('.pdb')):
         raise HTTPException(status_code=400, detail="Only .cif and .pdb files are allowed")
     
-    # Create a temporary uploads directory if it doesn't exist
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(exist_ok=True)
-    
     # Generate a unique filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_filename = f"{timestamp}_{file.filename}"
@@ -253,7 +287,7 @@ async def upload_template(file: UploadFile = File(...)):
             content = await file.read()
             buffer.write(content)
         
-        return {"filename": unique_filename, "path": str(file_path)}
+        return {"filename": unique_filename, "path": str(file_path.resolve())}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
@@ -288,7 +322,9 @@ async def predict_boltz(request: BoltzRequest):
             if seq.ccd:
                 seq_dict[seq.entity_type]["ccd"] = seq.ccd
             if seq.msa:
-                seq_dict[seq.entity_type]["msa"] = seq.msa
+                seq_dict[seq.entity_type]["msa"] = (
+                    "empty" if seq.msa == "empty" else str(resolve_local_path(seq.msa))
+                )
             if seq.modifications:
                 seq_dict[seq.entity_type]["modifications"] = [
                     {"position": mod.position, "ccd": mod.ccd} for mod in seq.modifications
@@ -411,8 +447,8 @@ async def predict_boltz(request: BoltzRequest):
         # Since we're running from the job directory, use relative paths
         cmd = ["boltz", "predict", "boltz_input.yaml", "--out_dir", "boltz_output"]
         
-        # Check if any sequence has MSA files - if so, don't use MSA server
-        has_msa_files = any(seq.msa and seq.msa.strip() and seq.msa != "empty" for seq in request.sequences)
+        # Check if any sequence has an explicit MSA setting, including "empty".
+        has_msa_files = any(seq.msa and seq.msa.strip() for seq in request.sequences)
         if not has_msa_files:
             cmd.append("--use_msa_server")
         
@@ -435,12 +471,17 @@ async def predict_boltz(request: BoltzRequest):
         # Generate YAML content for display
         yaml_content = yaml.dump(yaml_data, default_flow_style=False)
         
-        # Update job status based on result
-        if result.returncode == 0:
+        # Boltz can return 0 even when every input was skipped, so require
+        # an actual structure before marking the job completed.
+        pdb_file = find_job_pdb(job_path)
+        processing_failed = "Failed to process" in result.stdout
+
+        if result.returncode == 0 and pdb_file is not None and not processing_failed:
             job_info["status"] = "completed"
             job_info["completion_time"] = datetime.datetime.now().isoformat()
             job_info["stdout"] = result.stdout
             job_info["stderr"] = result.stderr
+            job_info["pdb_file"] = str(pdb_file)
             save_job_info(job_path, job_info)
             
             return PredictionResponse(
@@ -453,16 +494,24 @@ async def predict_boltz(request: BoltzRequest):
                 timestamp=timestamp
             )
         else:
+            if processing_failed:
+                failure_message = "Boltz skipped the input during processing. Check the MSA/input logs."
+            elif pdb_file is None:
+                failure_message = "Boltz finished without producing a valid PDB structure. Check the MSA/input logs."
+            else:
+                failure_message = f"Prediction failed with return code {result.returncode}."
+
             job_info["status"] = "failed"
             job_info["completion_time"] = datetime.datetime.now().isoformat()
             job_info["stdout"] = result.stdout
             job_info["stderr"] = result.stderr
             job_info["return_code"] = result.returncode
+            job_info["error"] = failure_message
             save_job_info(job_path, job_info)
             
             return PredictionResponse(
                 success=False,
-                message=f"Prediction failed with return code {result.returncode}. Job ID: {job_id}",
+                message=f"{failure_message} Job ID: {job_id}",
                 output=f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}",
                 yaml_content=yaml_content,
                 job_id=job_id,
@@ -617,26 +666,8 @@ async def get_job_pdb(job_id: str):
     if not job_path.exists():
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Look for PDB files in multiple possible locations
-    possible_paths = [
-        job_path / "boltz_output" / "boltz_input.pdb",
-        job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input.pdb",
-        job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input_model_0.pdb",
-        job_path / "boltz_output" / "boltz_input_model_0.pdb"
-    ]
-    # Also check for any .pdb files in the output directory
-    output_dir = job_path / "boltz_output"
-    if output_dir.exists():
-        for pdb_file in output_dir.rglob("*.pdb"):
-            possible_paths.append(pdb_file)
-    
-    pdb_file_path = None
-    for path in possible_paths:
-        if path.exists():
-            pdb_file_path = path
-            break
-    
-    if not pdb_file_path:
+    pdb_file_path = find_job_pdb(job_path)
+    if pdb_file_path is None:
         raise HTTPException(status_code=404, detail="PDB file not found")
     
     return FileResponse(
@@ -672,25 +703,9 @@ async def download_job_archive(job_id: str):
                 zip_file.write(yaml_file, f"{job_id}_input.yaml")
             
             # Add PDB file if available
-            pdb_paths = [
-                job_path / "boltz_output" / "boltz_input.pdb",
-                job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input.pdb",
-                job_path / "boltz_output" / "boltz_results_boltz_input" / "predictions" / "boltz_input" / "boltz_input_model_0.pdb",
-                job_path / "boltz_output" / "boltz_input_model_0.pdb"
-            ]
-            
-            # Also check for any .pdb files in the output directory
-            output_dir = job_path / "boltz_output"
-            if output_dir.exists():
-                for pdb_file in output_dir.rglob("*.pdb"):
-                    pdb_paths.append(pdb_file)
-            
-            pdb_added = False
-            for pdb_path in pdb_paths:
-                if pdb_path.exists() and not pdb_added:
-                    zip_file.write(pdb_path, f"{job_id}_structure.pdb")
-                    pdb_added = True
-                    break
+            pdb_path = find_job_pdb(job_path)
+            if pdb_path is not None:
+                zip_file.write(pdb_path, f"{job_id}_structure.pdb")
             
             # Add results files
             result_files = [
