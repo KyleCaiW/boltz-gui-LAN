@@ -4,6 +4,18 @@ set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BOLTZ_CACHE=${BOLTZ_CACHE:-${ROOT%/*}/boltz-cache}
 export BOLTZ_CACHE
+
+# MSA server override (optional). Default: https://api.colabfold.com
+# Uncomment and edit to use your own ColabFold-compatible server.
+#   BOLTZ_MSA_SERVER_URL=https://msa.example.org
+#   BOLTZ_MSA_PAIRING_STRATEGY=greedy
+for _msa_var in BOLTZ_MSA_SERVER_URL BOLTZ_MSA_PAIRING_STRATEGY; do
+    eval "_msa_val=\${$_msa_var:-}"
+    if [ -n "$_msa_val" ]; then
+        eval "export $_msa_var"
+    fi
+done
+
 BACKEND_DIR="$ROOT/backend"
 FRONTEND_DIR="$ROOT/frontend"
 LOG_DIR="$ROOT/logs"
@@ -22,7 +34,7 @@ say() {
 }
 
 die() {
-    say "错误: $*" >&2
+    say "Error: $*" >&2
     exit 1
 }
 
@@ -59,31 +71,31 @@ lan_ip() {
 }
 
 ensure_tools() {
-    command -v uv >/dev/null 2>&1 || die "未找到 uv，请先安装 uv"
-    command -v npm >/dev/null 2>&1 || die "未找到 npm，请先安装 Node.js"
-    command -v curl >/dev/null 2>&1 || die "未找到 curl，无法检查服务状态"
-    command -v setsid >/dev/null 2>&1 || die "未找到 setsid，无法可靠管理服务进程"
+    command -v uv >/dev/null 2>&1 || die "uv not found; please install uv first"
+    command -v npm >/dev/null 2>&1 || die "npm not found; please install Node.js first"
+    command -v curl >/dev/null 2>&1 || die "curl not found; cannot check service status"
+    command -v setsid >/dev/null 2>&1 || die "setsid not found; cannot manage service processes reliably"
 }
 
 ensure_deps() {
     if [ ! -x "$BACKEND_DIR/.venv/bin/python" ]; then
-        say "后端依赖未安装，正在执行 uv sync ..."
-        (cd "$BACKEND_DIR" && uv sync) || die "后端依赖安装失败"
+        say "Backend dependencies missing, running uv sync ..."
+        (cd "$BACKEND_DIR" && uv sync) || die "Failed to install backend dependencies"
     fi
 
     if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-        say "前端依赖未安装，正在执行 npm install ..."
-        (cd "$FRONTEND_DIR" && npm install) || die "前端依赖安装失败"
+        say "Frontend dependencies missing, running npm install ..."
+        (cd "$FRONTEND_DIR" && npm install) || die "Failed to install frontend dependencies"
     fi
 }
 
 install_all() {
     ensure_tools
-    say "安装后端依赖..."
-    (cd "$BACKEND_DIR" && uv sync) || die "后端依赖安装失败"
-    say "安装前端依赖..."
-    (cd "$FRONTEND_DIR" && npm install) || die "前端依赖安装失败"
-    say "依赖安装完成"
+    say "Installing backend dependencies..."
+    (cd "$BACKEND_DIR" && uv sync) || die "Failed to install backend dependencies"
+    say "Installing frontend dependencies..."
+    (cd "$FRONTEND_DIR" && npm install) || die "Failed to install frontend dependencies"
+    say "Dependencies installed"
 }
 
 spawn() {
@@ -106,7 +118,7 @@ wait_for_service() {
 
     while [ "$count" -lt "$attempts" ]; do
         if ! is_alive "$pid"; then
-            say "$name 启动失败，最近日志：" >&2
+            say "$name failed to start. Recent log:" >&2
             tail -n 40 "$logfile" >&2 2>/dev/null || true
             return 1
         fi
@@ -117,7 +129,7 @@ wait_for_service() {
         sleep 1
     done
 
-    say "$name 启动超时，最近日志：" >&2
+    say "$name start timed out. Recent log:" >&2
     tail -n 40 "$logfile" >&2 2>/dev/null || true
     return 1
 }
@@ -128,17 +140,17 @@ stop_service() {
     service_pid=$(read_pid "$pidfile")
 
     if [ -z "$service_pid" ]; then
-        say "$name 未运行"
+        say "$name is not running"
         return 0
     fi
 
     if ! is_alive "$service_pid"; then
         rm -f "$pidfile"
-        say "$name 未运行（已清理残留 PID 文件）"
+        say "$name is not running (removed stale PID file)"
         return 0
     fi
 
-    say "停止 $name (PID $service_pid) ..."
+    say "Stopping $name (PID $service_pid) ..."
     kill -TERM -"$service_pid" 2>/dev/null || kill -TERM "$service_pid" 2>/dev/null || true
 
     count=0
@@ -154,10 +166,10 @@ stop_service() {
 
     rm -f "$pidfile"
     if service_alive "$service_pid"; then
-        say "错误: $name 未能停止 (PID $service_pid)" >&2
+        say "Error: $name could not be stopped (PID $service_pid)" >&2
         return 1
     else
-        say "$name 已停止"
+        say "$name stopped"
         return 0
     fi
 }
@@ -165,63 +177,64 @@ stop_service() {
 start_backend() {
     pid=$(read_pid "$BACKEND_PID")
     if is_alive "$pid"; then
-        say "后端已在运行 (PID $pid)"
+        say "Backend already running (PID $pid)"
         return 0
     fi
     rm -f "$BACKEND_PID"
 
     if port_in_use "$BACKEND_PORT"; then
-        die "端口 $BACKEND_PORT 已被占用，请先停止占用该端口的程序"
+        die "Port $BACKEND_PORT is already in use; stop the process using it first"
     fi
 
-    say "启动后端..."
+    say "Starting backend..."
     spawn "$BACKEND_DIR" "$BACKEND_LOG" uv run run_server.py
     printf '%s\n' "$SPAWNED_PID" > "$BACKEND_PID"
 
-    if wait_for_service "后端" "http://127.0.0.1:$BACKEND_PORT/health" "$SPAWNED_PID" "$BACKEND_LOG"; then
-        say "后端已启动 (PID $SPAWNED_PID)"
+    if wait_for_service "Backend" "http://127.0.0.1:$BACKEND_PORT/health" "$SPAWNED_PID" "$BACKEND_LOG"; then
+        say "Backend started (PID $SPAWNED_PID)"
         return 0
     fi
 
-    stop_service "后端" "$BACKEND_PID"
+    stop_service "Backend" "$BACKEND_PID"
     return 1
 }
 
 start_frontend() {
     pid=$(read_pid "$FRONTEND_PID")
     if is_alive "$pid"; then
-        say "前端已在运行 (PID $pid)"
+        say "Frontend already running (PID $pid)"
         return 0
     fi
     rm -f "$FRONTEND_PID"
 
     if port_in_use "$FRONTEND_PORT"; then
-        die "端口 $FRONTEND_PORT 已被占用，请先停止占用该端口的程序"
+        die "Port $FRONTEND_PORT is already in use; stop the process using it first"
     fi
 
-    say "启动前端..."
+    say "Starting frontend..."
     spawn "$FRONTEND_DIR" "$FRONTEND_LOG" npm run dev
     printf '%s\n' "$SPAWNED_PID" > "$FRONTEND_PID"
 
-    if wait_for_service "前端" "http://127.0.0.1:$FRONTEND_PORT/" "$SPAWNED_PID" "$FRONTEND_LOG"; then
-        say "前端已启动 (PID $SPAWNED_PID)"
+    if wait_for_service "Frontend" "http://127.0.0.1:$FRONTEND_PORT/" "$SPAWNED_PID" "$FRONTEND_LOG"; then
+        say "Frontend started (PID $SPAWNED_PID)"
         return 0
     fi
 
-    stop_service "前端" "$FRONTEND_PID"
+    stop_service "Frontend" "$FRONTEND_PID"
     return 1
 }
 
 print_access() {
     ip=$(lan_ip)
     say ""
-    say "本机访问:   http://localhost:$FRONTEND_PORT"
+    say "Local:      http://localhost:$FRONTEND_PORT"
     if [ -n "$ip" ]; then
-        say "局域网访问: http://$ip:$FRONTEND_PORT"
+        say "LAN:        http://$ip:$FRONTEND_PORT"
     fi
-    say "后端 API:   http://localhost:$BACKEND_PORT"
-    say "Boltz 缓存: $BOLTZ_CACHE"
-    say "日志目录:   $LOG_DIR"
+    say "Backend:    http://localhost:$BACKEND_PORT"
+    say "MSA server: ${BOLTZ_MSA_SERVER_URL:-https://api.colabfold.com (default)}"
+    say "Boltz cache: $BOLTZ_CACHE"
+    say "Log dir:    $LOG_DIR"
 }
 
 start_all() {
@@ -229,7 +242,7 @@ start_all() {
     ensure_deps
     start_backend || exit 1
     if ! start_frontend; then
-        stop_service "后端" "$BACKEND_PID"
+        stop_service "Backend" "$BACKEND_PID"
         exit 1
     fi
     print_access
@@ -237,8 +250,8 @@ start_all() {
 
 stop_all() {
     stop_ok=0
-    stop_service "前端" "$FRONTEND_PID" || stop_ok=1
-    stop_service "后端" "$BACKEND_PID" || stop_ok=1
+    stop_service "Frontend" "$FRONTEND_PID" || stop_ok=1
+    stop_service "Backend" "$BACKEND_PID" || stop_ok=1
     return "$stop_ok"
 }
 
@@ -247,31 +260,33 @@ status_all() {
     frontend_pid=$(read_pid "$FRONTEND_PID")
 
     if is_alive "$backend_pid"; then
-        say "后端: 运行中 (PID $backend_pid, 端口 $BACKEND_PORT)"
+        say "Backend:  running (PID $backend_pid, port $BACKEND_PORT)"
     else
         rm -f "$BACKEND_PID"
-        say "后端: 未运行"
+        say "Backend:  not running"
     fi
 
     if is_alive "$frontend_pid"; then
-        say "前端: 运行中 (PID $frontend_pid, 端口 $FRONTEND_PORT)"
+        say "Frontend: running (PID $frontend_pid, port $FRONTEND_PORT)"
     else
         rm -f "$FRONTEND_PID"
-        say "前端: 未运行"
+        say "Frontend: not running"
     fi
+
+    say "MSA server: ${BOLTZ_MSA_SERVER_URL:-https://api.colabfold.com (default)}"
 }
 
 usage() {
     cat <<EOF
-用法: sh run.sh [命令]
+Usage: sh run.sh [command]
 
-  start     启动前后端（默认）
-  stop      关闭前后端
-  restart   重启前后端
-  status    查看运行状态
-  install   安装前后端依赖
+  start     start backend and frontend (default)
+  stop      stop backend and frontend
+  restart   restart backend and frontend
+  status    show service status
+  install   install backend and frontend dependencies
 
-日志目录: $LOG_DIR
+Log dir: $LOG_DIR
 EOF
 }
 
@@ -285,7 +300,7 @@ case "$command" in
         ;;
     restart)
         if ! stop_all; then
-            die "服务未能完全停止，已取消重启"
+            die "Services did not stop cleanly; restart cancelled"
         fi
         sleep 1
         start_all
