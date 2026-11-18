@@ -2,12 +2,36 @@ import { useState } from 'react'
 
 const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
   const [isDragOver, setIsDragOver] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
 
-  const handleFileUpload = (file) => {
-    if (file && file.name.endsWith('.a3m')) {
-      onUpdate({ msa: file.name })
-    } else {
+  const handleFileUpload = async (file) => {
+    if (!file || !file.name.endsWith('.a3m')) {
       alert('Please select a valid .a3m file')
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch('/upload_msa', {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Upload failed')
+      }
+
+      const result = await response.json()
+      onUpdate({ msa: result.path, msa_filename: result.filename })
+    } catch (error) {
+      console.error('MSA upload failed:', error)
+      alert(`MSA upload failed: ${error.message}`)
+    } finally {
+      setIsUploading(false)
     }
   }
 
@@ -144,6 +168,27 @@ const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
               />
             </div>
             <div className="md:col-span-2">
+              {sequence.entity_type === 'protein' && (
+                <label className="flex items-start space-x-2 mb-3">
+                  <input
+                    type="checkbox"
+                    checked={sequence.msa === 'empty'}
+                    onChange={(e) => onUpdate(e.target.checked
+                      ? { msa: 'empty', msa_filename: '' }
+                      : { msa: '', msa_filename: '' })}
+                    className="w-4 h-4 mt-0.5 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">
+                    No MSA (single sequence mode)
+                    <span className="block text-xs text-gray-500">
+                      Skips the MSA server entirely and predicts from this sequence alone.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
+            {sequence.msa !== 'empty' && (
+            <div className="md:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-3">
                 MSA File (.a3m) - Optional
               </label>
@@ -173,6 +218,7 @@ const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
                   type="file"
                   accept=".a3m"
                   onChange={handleFileChange}
+                  disabled={isUploading}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   id={`msa-upload-${sequence.id}`}
                 />
@@ -188,11 +234,13 @@ const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
                       </div>
                       <div>
                         <p className="text-green-700 font-semibold">File uploaded successfully!</p>
-                        <p className="text-sm text-green-600 font-mono mt-1">{sequence.msa}</p>
+                        <p className="text-sm text-green-600 font-mono mt-1">
+                          {sequence.msa_filename || sequence.msa}
+                        </p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => onUpdate({ msa: '' })}
+                        onClick={() => onUpdate({ msa: '', msa_filename: '' })}
                         className="text-red-500 hover:text-red-700 text-sm font-medium transition-colors duration-200"
                       >
                         Remove file
@@ -212,7 +260,11 @@ const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
                         <p className={`font-semibold transition-colors duration-300 ${
                           isDragOver ? 'text-blue-700' : 'text-gray-700'
                         }`}>
-                          {isDragOver ? 'Drop your .a3m file here' : 'Drag & drop your .a3m file here'}
+                          {isUploading
+                            ? 'Uploading MSA...'
+                            : isDragOver
+                              ? 'Drop your .a3m file here'
+                              : 'Drag & drop your .a3m file here'}
                         </p>
                         <p className="text-sm text-gray-500 mt-1">
                           or{' '}
@@ -232,6 +284,7 @@ const SequenceInput = ({ sequence, onUpdate, onRemove }) => {
                 </div>
               </div>
             </div>
+            )}
             {sequence.entity_type === 'protein' && (
               <div className="md:col-span-2">
                 <label className="flex items-center space-x-2">
